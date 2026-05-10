@@ -1,0 +1,12 @@
+# .streamlit/config.toml
+
+[theme]
+# 기본 베이스를 다크모드로 강제 지정
+base = "dark"
+
+# SHABAL 엔진 네온 테마 커스텀 색상
+primaryColor = "#00F3FF"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#161B22"
+textColor = "#FFFFFF"
+font = "sans serif"
