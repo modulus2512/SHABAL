@@ -24,6 +24,11 @@ st.markdown("""
     .stButton>button:hover { background-color: #00F3FF; color: #0E1117; box-shadow: 0 0 20px #00F3FF; }
     .instruction-card { background: linear-gradient(135deg, #161B22 0%, #0E1117 100%); border: 1px solid #39FF14; padding: 25px; border-radius: 5px; margin: 10px 0; box-shadow: 0 0 15px rgba(57,255,20,0.2); }
     .neon-blue { color: #00F3FF; text-shadow: 0 0 5px #00F3FF; font-weight: bold; }
+    
+    /* 사이드바 프로토콜 강조용 CSS */
+    .protocol-level-1 { background-color: rgba(57,255,20,0.1); border-left: 4px solid #39FF14; padding: 10px; margin-top:10px; }
+    .protocol-level-2 { background-color: rgba(255,165,0,0.1); border-left: 4px solid #FFA500; padding: 10px; margin-top:10px; }
+    .protocol-level-3 { background-color: rgba(255,0,229,0.1); border-left: 4px solid #FF00E5; padding: 10px; margin-top:10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -40,6 +45,37 @@ def fetch_realtime_usd_krw():
             return float(ticker.fast_info['last_price'])
         except:
             return 1380.0 
+
+# [v3.1 수정] QQQ MDD 탐색 컬럼 무결성 확보 알고리즘
+@st.cache_data(ttl=3600)
+def get_qqq_mdd():
+    try:
+        data = yf.download("QQQ", period="6mo", progress=False)
+        if data.empty: 
+            return 0.0, 0.0
+            
+        # 구조 다변화에 대응하는 컬럼 스캐너
+        close_col = None
+        for col in data.columns:
+            col_str = str(col).lower()
+            if 'close' in col_str and 'adj' not in col_str:
+                close_col = col
+                break
+                
+        if close_col is None:
+            return 0.0, 0.0
+            
+        hist = data[close_col].squeeze()
+        
+        current_price = float(hist.iloc[-1])
+        high_1m = float(hist.tail(21).max())
+        high_6m = float(hist.max())
+        
+        mdd_1m = ((current_price / high_1m) - 1) * 100 if high_1m > 0 else 0.0
+        mdd_6m = ((current_price / high_6m) - 1) * 100 if high_6m > 0 else 0.0
+        return mdd_1m, mdd_6m
+    except:
+        return 0.0, 0.0
 
 # 3. DB 연동 및 데이터 보정
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -69,7 +105,14 @@ def load_and_fix_data():
 
 holdings_df, trade_log_df = load_and_fix_data()
 
-# 4. 사이드바: 🎛️ CONTROL PANEL
+# 기본 QLD 단가 추출 (사이드바 편의성 용도)
+default_qld_price = 0.0
+if not holdings_df.empty:
+    qld_row = holdings_df[holdings_df['티커'] == 'QLD']
+    if not qld_row.empty:
+        default_qld_price = float(pd.to_numeric(qld_row['현재가'], errors='coerce').fillna(0.0).iloc[0])
+
+# 4. 사이드바: 🎛️ CONTROL PANEL & 패닉 방지 프로토콜
 if 'usd_krw' not in st.session_state:
     st.session_state['usd_krw'] = 1450.0 
 
@@ -87,6 +130,54 @@ with st.sidebar:
 
     monthly_cash = st.number_input("당월 적립액 (KRW)", value=2500000, step=100000)
     
+    # 침착한 하락장 (Anti-Panic Rebalancing Protocol)
+    with st.expander("🛡️ 침착한 하락장 (Anti-Panic Protocol)"):
+        st.caption("MDD와 괴리율을 교차 검증하여 SGOV 낭비를 막습니다.")
+        
+        col_q1, col_q2 = st.columns(2)
+        with col_q1:
+            input_qld_current = st.number_input("현재 QLD 단가 ($)", value=default_qld_price, step=1.0)
+        with col_q2:
+            input_qld_avg = st.number_input("QLD 평단가액 ($)", value=default_qld_price, step=1.0)
+            
+        # 실시간 복구된 데이터 연산
+        qqq_mdd_1m, qqq_mdd_6m = get_qqq_mdd()
+        disparity = ((input_qld_current / input_qld_avg) - 1) * 100 if input_qld_avg > 0 else 0.0
+        
+        # 지표 출력
+        st.write(f"**현재 QQQ MDD (1M):** {qqq_mdd_1m:.2f}%")
+        st.write(f"**현재 QQQ MDD (6M):** {qqq_mdd_6m:.2f}%")
+        st.write(f"**현재 괴리율 (G):** {disparity:.2f}%")
+        
+        # 프로토콜 판별
+        if (qqq_mdd_6m <= -20 or qqq_mdd_1m <= -15) and disparity <= -30:
+            st.markdown("""
+            <div class="protocol-level-3">
+                <b>🚨 Level 3 (시스템적 폭락)</b><br>
+                <b>목표:</b> 평단가 인하율 T≥15% 달성<br>
+                <b>지침 [SGOV 전량 격리 해제]:</b><br>
+                SGOV를 전량 매도하여 QLD 매수에 스위칭 투입, 평단가를 공격적으로 낮추십시오.
+            </div>
+            """, unsafe_allow_html=True)
+        elif -20 < qqq_mdd_6m <= -10 and disparity <= -15:
+            st.markdown("""
+            <div class="protocol-level-2">
+                <b>⚠️ Level 2 (구조적 조정)</b><br>
+                <b>목표:</b> 평단가 인하율 T≥5% 달성<br>
+                <b>지침 [SGOV 1차 부분 해제]:</b><br>
+                신규 투자금 투입 후에도 8:2 비율이 부족할 경우, 예수금 <b>가용 질량의 최대 30%까지</b> 떼서 QLD를 추가 매수하십시오.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="protocol-level-1">
+                <b>🟢 Level 1 (평시 노이즈)</b><br>
+                <b>목표:</b> 평단가 인하 요구량 없음<br>
+                <b>지침 [SGOV 보존]:</b><br>
+                신규 투자금만을 활용하여, 엔진 제안에 따라 QLD 비중을 늘려가는 데에 집중하십시오.
+            </div>
+            """, unsafe_allow_html=True)
+
     st.divider()
     st.subheader("📋 통합 자산 관리")
     edited_holdings = st.data_editor(holdings_df, num_rows="dynamic", key="holdings_editor", use_container_width=True,
@@ -105,7 +196,7 @@ with st.sidebar:
         st.cache_data.clear()
 
 # 5. 코어 엔진 로직
-def run_shabal_v29_logic(df, cash_krw, rate, target_ratio_pct):
+def run_shabal_v31_logic(df, cash_krw, rate, target_ratio_pct):
     val_lev, val_div, val_cash = 0.0, 0.0, 0.0
     target_ratio = target_ratio_pct / 100.0
     
@@ -150,7 +241,7 @@ with t1:
     
     target_weight = st.slider("Target Leverage Weight (%)", min_value=0, max_value=100, value=80, step=5)
     
-    total_asset_krw, cur_ratio, required_lev, cash_krw = run_shabal_v29_logic(edited_holdings, monthly_cash, usd_krw_live, target_weight)
+    total_asset_krw, cur_ratio, required_lev, cash_krw = run_shabal_v31_logic(edited_holdings, monthly_cash, usd_krw_live, target_weight)
     
     fig_gauge = go.Figure(go.Indicator(
         mode="gauge+number+delta", 
@@ -181,7 +272,7 @@ with t2:
             <p style="color: #CCC;">신규 예수금 {cash_krw:,.0f}원 기준 지침</p>
             <p style="font-size: 22px; color: #FFFFFF; line-height: 1.4;">
             Leverage 군에 <b>예수금 전액 투입</b> 요망<br>
-            <span style="font-size: 16px; color: #FF00E5;">⚠️ 목표 비중 달성을 위해 추가로 <b>Dividend 군 ₩{shortfall:,.0f} 매도 후 Leverage 매수</b>가 필요합니다.</span>
+            <span style="font-size: 16px; color: #FF00E5;">⚠️ 목표 비중 달성을 위해 추가로 <b>Dividend 군 ₩{shortfall:,.0f} 매도 후 Leverage 매수</b>가 필요합니다.<br>(좌측 사이드바의 '침착한 하락장' 프로토콜을 확인하여 SGOV 매도 여부를 결정하세요.)</span>
             </p>
         </div>
         """
@@ -212,7 +303,7 @@ with t2:
     st.markdown(instruction_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# 6. QQQ MDD Tracker
+# 6. QQQ MDD Tracker (멀티인덱스 컬럼 구조 방어 완료)
 # ---------------------------------------------------------------------
 st.divider()
 st.subheader("📉 QQQ MDD & Value Averaging Tracker")
@@ -227,8 +318,17 @@ with col_mdd1:
     def fetch_qqq_high(p):
         try:
             d = yf.download("QQQ", period=p, progress=False)
-            if not d.empty and 'High' in d.columns:
-                return float(np.nanmax(d['High']))
+            if d.empty:
+                return 450.0
+                
+            # 멀티레이어 컬럼 구조 방어용 스캐너
+            high_col = None
+            for col in d.columns:
+                if 'high' in str(col).lower():
+                    high_col = col
+                    break
+            if high_col is not None:
+                return float(np.nanmax(d[high_col]))
             return 450.0
         except: 
             return 450.0
@@ -261,25 +361,20 @@ st.subheader("📊 Serial Portfolio Analysis")
 bench_start = st.date_input("Backtest Start", date(2023, 1, 1))
 
 @st.cache_data(ttl=86400)
-def run_serial_analysis_v29(start_date, monthly_inv_krw, rate):
+def run_serial_analysis_v31(start_date, monthly_inv_krw, rate):
     data = yf.download(["QLD", "QQQ", "SPYM", "SGOV"], start=start_date)['Close'].ffill()
     
-    # [v2.9 핵심 로직] SGOV(단기채) 상장 이전 데이터를 연 4% 복리로 역산하여 가상 가격(Synthetic Price) 생성
     if 'SGOV' in data.columns and data['SGOV'].isna().any():
         first_valid_date = data['SGOV'].first_valid_index()
         if first_valid_date is not None:
             first_pos_int = data.index.get_loc(first_valid_date)
-            daily_discount_rate = (1 + 0.04)**(1/252) - 1 # 연 4% -> 일일 복리
+            daily_discount_rate = (1 + 0.04)**(1/252) - 1
             
-            # 상장일로부터 과거로 갈수록 누적 할인 적용
             n_days_before = first_pos_int
             days_array = np.arange(n_days_before, 0, -1)
             base_price = data.iloc[first_pos_int, data.columns.get_loc('SGOV')]
-            
-            # 벡터 연산으로 과거 가상 가격 주입
             data.iloc[:first_pos_int, data.columns.get_loc('SGOV')] = base_price / ((1 + daily_discount_rate) ** days_array)
             
-    # SGOV 외의 혹시 모를 결측치는 bfill 처리
     data = data.bfill()
     
     rebal_dates = []
@@ -337,7 +432,7 @@ def run_serial_analysis_v29(start_date, monthly_inv_krw, rate):
     
     return res
 
-bench_res = run_serial_analysis_v29(bench_start, monthly_cash, usd_krw_live)
+bench_res = run_serial_analysis_v31(bench_start, monthly_cash, usd_krw_live)
 
 if not bench_res.empty:
     group = st.radio("Display Group", ["Full (100%)", "QQQ/SGOV Mix", "QLD/SGOV Mix"], horizontal=True)
@@ -420,4 +515,4 @@ if st.button("💾 Sync Trade Log"):
     st.success("동기화 완료!")
     st.cache_data.clear()
 
-st.caption("© 2026 SHABAL v2.9 | Engineered by Modulus2512")
+st.caption("© 2026 SHABAL v3.1 | Engineered by Modulus2512")
